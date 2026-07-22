@@ -308,7 +308,7 @@ Generated outputs, source PDFs, local environments, temporary batches, and API s
 
 ---
 
-## What this project demonstrates
+## Key techniques
 
 * Building a production-oriented extraction pipeline rather than a one-off prompt.
 * Choosing between deterministic parsing and AI based on the actual source format.
