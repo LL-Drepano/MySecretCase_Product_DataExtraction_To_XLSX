@@ -1,0 +1,10 @@
+# Sistema: poppler-utils (pdftoppm, pdftotext)  ->  apt-get install poppler-utils
+pdfplumber>=0.11
+pypdf>=5.0
+Pillow>=10.0
+requests>=2.31
+openpyxl>=3.1
+# Opzionali:
+pyzbar>=0.1.9        # decodifica barcode: terzo cross-check dell'EAN
+gspread>=6.0         # scrittura diretta su Google Sheets (Service Account)
+google-auth>=2.0
