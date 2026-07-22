@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Secrets
+.env
+.env.*
+*.key
+
+# Source documents and generated outputs
+fustelle/
+test/
+output/
+_automatic_batches/
+*.pdf
+*.xlsx
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
