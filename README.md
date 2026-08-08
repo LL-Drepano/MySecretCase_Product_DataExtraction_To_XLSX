@@ -1,6 +1,7 @@
 # MySecretCase_Product_DataExtraction_To_XLSX
 An automated pipeline Demo I built for MySecretCase (famous sextoys italian company) that extracts structured product data from packaging dieline PDFs and maps it to a spreadsheet with **one row per pack and one column per field**, following the supplied 34-column reference mapping.
 
+
 ## The problem
 
 The input looked straightforward: 50 PDF dielines, all following the same general layout, with one reference file showing the expected mapping.
@@ -12,6 +13,13 @@ Most of the useful content — product name, LOT information, dimensions, batter
 Direct extraction still recovered a few residual elements, mainly recycling codes, but not enough to build the required dataset. The task therefore needed a hybrid pipeline: deterministic parsing wherever possible, and multimodal AI only for the semantic information embedded in the artwork.
 
 ---
+
+## Highlights
+
+- **Hybrid architecture — LLMs for meaning, deterministic code for global rules.** An LLM pass understands each video individually; a deterministic pass then looks at all 399 at once and enforces *one head keyword = exactly one owner*. This split — semantic understanding by the model, global constraints by code — is the core design decision, and it's the same pattern used in production AI systems.
+- **Caught the subtle failure the whole pipeline exists to prevent.** The copy-generation step could re-introduce the exact keyword collisions the pipeline was built to eliminate — because it works one video at a time and can't see what other videos already own. I found it, built a validation guard against it, and the guard caught **12 genuine collisions** that would otherwise have shipped as duplicate-competing videos.
+- **Measured the tradeoff instead of assuming it.** Strict deduplication strands some videos on generic keywords; rather than pretend the solution was clean, I measured the real cost — **8% of processed rows** — and shipped all 399 videos flagged rather than dropped.
+- **Scale, entirely on free-tier APIs.** 399-video catalogue · **790 LLM calls** · **~1.3M input tokens** · self-hosted on Docker · $0 spend.
 
 ## What I built
 
