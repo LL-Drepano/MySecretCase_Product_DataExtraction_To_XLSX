@@ -1,34 +1,28 @@
 # MySecretCase_Product_DataExtraction_To_XLSX
-An automated pipeline Demo I built for MySecretCase (famous sextoys italian company) that extracts structured product data from packaging dieline PDFs and maps it to a spreadsheet with **one row per pack and one column per field**, following the supplied 34-column reference mapping.
 
+An automated pipeline demo I built for a **MySecretCase selection task**, designed to extract structured product data from packaging dieline PDFs and map it to a spreadsheet with **one row per pack and one column per field**, following the supplied 34-column reference mapping.
 
 ## The problem
 
-The input looked straightforward: 50 PDF dielines, all following the same general layout, with one reference file showing the expected mapping.
+The input was a folder of 50 PDF dielines, all following the same general layout, plus one reference file showing the expected spreadsheet mapping.
 
-The obvious solution would have been to extract the text directly from each PDF and map it into columns. That approach did not work.
+The first idea was to extract the text directly from each PDF and map it into columns. That did not work.
 
-Most of the useful content — product name, LOT information, dimensions, battery specifications, waterproof rating, material, feature icons, and warranty symbols — had been converted into **vector outlines** during the prepress process. To a normal PDF text parser, those values were not text anymore; they were drawing instructions.
+Most of the useful content — product name, LOT information, dimensions, battery specifications, waterproof rating, material, feature icons, and warranty symbols — had been converted into **vector outlines** during the prepress process. To a normal PDF text parser, those values were not text anymore.
 
-Direct extraction still recovered a few residual elements, mainly recycling codes, but not enough to build the required dataset. The task therefore needed a hybrid pipeline: deterministic parsing wherever possible, and multimodal AI only for the semantic information embedded in the artwork.
+Direct extraction still recovered a few residual elements, mainly recycling codes, but not enough to build the dataset.
+
+The resulting pipeline therefore uses deterministic extraction where the source allows it and vision-based extraction for information embedded in the artwork.
 
 ---
 
 ## Highlights
 
-- **Hybrid architecture — LLMs for meaning, deterministic code for global rules.** An LLM pass understands each video individually; a deterministic pass then looks at all 399 at once and enforces *one head keyword = exactly one owner*. This split — semantic understanding by the model, global constraints by code — is the core design decision, and it's the same pattern used in production AI systems.
-- **Caught the subtle failure the whole pipeline exists to prevent.** The copy-generation step could re-introduce the exact keyword collisions the pipeline was built to eliminate — because it works one video at a time and can't see what other videos already own. I found it, built a validation guard against it, and the guard caught **12 genuine collisions** that would otherwise have shipped as duplicate-competing videos.
-- **Measured the tradeoff instead of assuming it.** Strict deduplication strands some videos on generic keywords; rather than pretend the solution was clean, I measured the real cost — **8% of processed rows** — and shipped all 399 videos flagged rather than dropped.
-- **Scale, entirely on free-tier APIs.** 399-video catalogue · **790 LLM calls** · **~1.3M input tokens** · self-hosted on Docker · $0 spend.
-
-## What I built
-
-A four-part extraction system:
-
-1. **Deterministic extraction** — the filename provides the EAN, box dimensions, and product reference; residual PDF text provides recycling codes; fixed company fields are populated from controlled constants.
-2. **Vision-based extraction** — page one is rasterised and sent to Gemini with a strict JSON response schema to read the semantic and graphical fields.
-3. **Validation and confidence scoring** — the EAN check digit, double AI reading, domain rules, missing-field checks, and field-level disagreements produce a confidence level and human-readable flags.
-4. **Automatic batch orchestration** — the 50 PDFs are processed in groups of five, with pauses, retries, temporary outputs, and a final automatic merge into one spreadsheet.
+* **50 packaging PDFs → one structured 34-column dataset.** The full folder is processed automatically and merged into a single Excel workbook.
+* **Hybrid extraction.** EAN, box dimensions, recycling codes, filenames, and fixed fields are handled deterministically; Gemini Vision is used only for information that cannot be recovered as text.
+* **Two-pass extraction with review flags.** Every pack is sent to the model twice. Disagreements, missing values, and failed validation rules are surfaced instead of silently accepted.
+* **Automatic rate-limit handling.** The initial pipeline worked on four PDFs but became unreliable across all 50. A batch runner was added to handle cooldowns, retries, temporary outputs, and final consolidation.
+* **Manual validation on 510 fields.** I reviewed all 34 mapped fields across a stratified sample of 15 packs and found no extraction mismatches in the reviewed sample.
 
 **Stack:** Python · `pdfplumber` / `pypdf` · Poppler (`pdftoppm`) · Pillow · Gemini API · `requests` · OpenPyXL.
 
@@ -36,7 +30,7 @@ A four-part extraction system:
 
 ## How it works
 
-### 0. The filename is treated as structured input
+### 1. Structured information from the filename
 
 Each filename follows a pattern similar to:
 
@@ -50,23 +44,23 @@ A regular expression extracts:
 * external box dimensions;
 * product name or variant.
 
-The EAN is then validated using its check digit. These fields do not require an LLM and are therefore deterministic, fast, and effectively free to process.
+The EAN is also validated using its check digit.
 
-The same principle is applied to fields that are constant across the product line, such as manufacturer and importer details.
+Fields that are constant across the product line, such as manufacturer and importer information, are populated from controlled values rather than extracted repeatedly.
 
-### 1. The PDF is inspected before using AI
+### 2. PDF inspection
 
-The parser first attempts to recover live text and positional information.
+The parser first attempts to recover any remaining live text and positional information.
 
-This is still useful for the small amount of text that survived the outlining process, particularly recycling labels such as `PAP 21` and `CPE 07`. Those values are paired spatially and mapped deterministically to the correct packaging component.
+This is useful for the small amount of text that survived the outlining process, particularly recycling labels such as `PAP 21` and `CPE 07`.
 
-The important design choice was not to force one extraction method onto every field. Fields that can be derived reliably remain outside the AI step.
+Those values are paired spatially and mapped to the corresponding packaging component.
 
-### 2. The artwork becomes a vision input
+### 3. Vision extraction
 
-The first page of each dieline is rasterised with Poppler and converted into an image suitable for a multimodal model.
+The first page of each dieline is rasterised with Poppler and converted into an image.
 
-Gemini then returns structured JSON containing fields such as:
+Gemini returns structured JSON containing fields such as:
 
 * serial or LOT information;
 * CE, WEEE, UKCA, TRIMAN, warranty, manual, and QR symbols;
@@ -81,108 +75,121 @@ Gemini then returns structured JSON containing fields such as:
 * TRIMAN disposal content;
 * presence of “Sexy Ideas”.
 
-The request uses `temperature = 0` and a response schema so that the output is predictable and machine-readable.
+The request uses a defined response schema and `temperature = 0` to keep the output format consistent.
 
-### 3. Every pack is read twice
+### 4. Two-pass extraction and validation
 
-Each image is sent to the model twice.
+Each pack is processed through **two separate model calls**.
 
-If both readings agree, the field is considered stable. If they disagree, the conflicting value is removed rather than guessed, and the row is marked for review.
+If the two results agree, the value is kept. If they disagree, the conflicting field is cleared and flagged for review rather than guessed.
 
-Additional guards check for cases such as:
+Additional checks cover cases such as:
 
 * invalid EAN check digit;
 * missing LOT or product dimensions;
-* an electronic product marked waterproof without an IPX code;
-* expected battery or operating data missing from an electronic product;
-* fields that are genuinely absent from the original dieline.
+* waterproof products without an IPX value;
+* expected battery or operating data missing from electronic products;
+* information genuinely absent from the source dieline.
 
-The output includes two service columns:
+The output contains two additional service columns:
 
 * **Confidence:** High, Medium, or Low;
-* **Flags / Notes:** a readable explanation of what requires attention.
+* **Flags / Notes:** explanation of fields that may require review.
 
-The system never invents a missing value just to complete the row.
+The confidence value is a **model-generated heuristic label**, not a calibrated probability of correctness. It is used together with deterministic validation rules and disagreement flags to prioritise manual review.
 
-### 4. The real scaling issue: four PDFs worked, fifty did not
+Missing information remains missing rather than being filled with plausible-looking values.
 
-The validation run on four PDFs completed correctly, but processing the full folder as one uninterrupted run caused the Gemini endpoint to become temporarily unavailable after repeated calls.
+---
 
-The reason is structural: every pack requires two model calls, so 50 packs produce approximately 100 requests. This is small in cost terms, but enough to encounter free-tier request limits or temporary throttling.
+## Scaling from 4 PDFs to 50
 
-The solution was not to ask the operator to divide the work manually. I added `batch_run.py`, which handles the entire process automatically:
+The first validation run on four PDFs completed correctly.
+
+Processing all 50 packs in one uninterrupted run caused temporary Gemini failures after repeated requests. Since every pack requires two model calls, the complete dataset requires roughly 100 vision requests.
+
+To handle this, `batch_run.py`:
 
 1. discovers all PDFs in the input folder;
 2. splits them into batches of five;
-3. runs the normal extraction pipeline on each batch;
-4. waits 60 seconds before starting the next batch;
-5. retries a failed batch after a longer cooldown;
-6. stores each temporary workbook separately;
-7. merges all rows into one final Excel file;
+3. processes each batch through the standard extraction pipeline;
+4. waits between batches;
+5. retries failed batches after a longer cooldown;
+6. stores temporary workbooks separately;
+7. merges all rows into the final Excel file;
 8. removes temporary PDF copies after completion.
 
-The user still launches a single command. Batching is an internal rate-limit strategy, not a manual workflow.
-
-### 5. The final workbook is converted to Google Sheets
-
-The pipeline writes the 34 official columns in the same order as the reference mapping and adds a small number of grey service columns for provenance, confidence, flags, EAN, box dimensions, and product identification.
-
-The resulting `.xlsx` file can be uploaded to Google Drive and opened with Google Sheets without changing the column structure.
+The operator still launches one command; the batching happens internally.
 
 ---
 
 ## Accuracy and validation
 
-The first validation set contained four deliberately different products. All four produced a complete 34-column mapping, with three classified as High confidence and one flagged because the source itself contained an ambiguous or absent value.
+The initial validation set contained four deliberately different products. All four produced a complete 34-column mapping, with three classified as High confidence and one flagged because the source contained an ambiguous or missing value.
 
-After processing the complete 50-pack dataset, I performed a stratified manual review of 15 rows:
+After processing the complete 50-pack dataset, I manually reviewed a stratified sample of 15 rows:
 
 * 5 High-confidence rows;
 * 5 Medium-confidence rows;
 * 5 Low-confidence rows.
 
-Every checked field matched the information actually visible in the corresponding PDF, giving an **observed accuracy of 100% on the reviewed sample**.
+For each selected row, I compared **all 34 mapped fields** against the corresponding source PDF.
 
-The `NEEDS_REVIEW` cases were not extraction errors. In the reviewed rows, flags such as “LOT unreadable” or “dimensions missing” correctly reflected information that was genuinely absent or unreadable in the original dieline.
+That produced:
 
-Validation result:
+```text
+15 rows × 34 fields = 510 manual comparisons
+```
 
+No extraction mismatches were found in those 510 comparisons.
+
+The reviewed `NEEDS_REVIEW` cases were not extraction errors: flags such as “LOT unreadable” or “dimensions missing” matched information that was actually absent or unreadable in the source.
+
+Validation summary:
+
+* complete dataset: **50 packs**;
 * rows manually reviewed: **15 of 50**;
-* observed field accuracy on the sample: **100%**;
-* extraction errors found in the sample: **0**;
-* failed rows found in the sample: **0**;
-* false-positive review flags found in the sample: **0**.
+* fields reviewed per row: **34**;
+* total manual comparisons: **510**;
+* extraction mismatches found: **0**;
+* failed rows found in the reviewed sample: **0**;
+* false-positive review flags found in the reviewed sample: **0**.
 
-This is a stratified sample-based validation, not a claim that every cell in all 50 rows was manually audited.
+This is a **sample-based validation**, not a claim that every cell across all 50 rows was manually audited.
 
 ---
 
 ## Error handling
 
-| Situation                    | Behaviour                                          |
-| ---------------------------- | -------------------------------------------------- |
-| Invalid EAN check digit      | Row flagged and confidence reduced                 |
-| LOT or dimensions absent     | `❌` / empty value, `NEEDS_REVIEW`, Low confidence  |
-| Two Gemini readings disagree | Conflicting field cleared and flagged              |
-| Temporary Gemini failure     | Automatic request retry with backoff               |
-| Whole batch fails            | Batch-level retry after a longer cooldown          |
-| Free-tier throttling         | Automatic five-file batching and inter-batch pause |
-| Non-conforming filename      | Row retained, but identifying fields are flagged   |
-| Missing source information   | Reported as missing; never fabricated              |
+| Situation                  | Behaviour                                |
+| -------------------------- | ---------------------------------------- |
+| Invalid EAN check digit    | Row flagged                              |
+| LOT or dimensions absent   | Empty / missing value and review flag    |
+| Two Gemini calls disagree  | Conflicting field cleared and flagged    |
+| Temporary Gemini failure   | Automatic request retry with backoff     |
+| Whole batch fails          | Batch-level retry after longer cooldown  |
+| Free-tier throttling       | Five-file batching and inter-batch pause |
+| Non-conforming filename    | Row retained, identifying fields flagged |
+| Missing source information | Reported as missing, never fabricated    |
 
-A failed batch does not silently disappear. The process stops with an explicit error if the configured retry budget is exhausted.
+If the configured retry budget is exhausted, the process stops with an explicit error rather than silently dropping a batch.
 
 ---
 
-## Design decisions
+## Output
 
-* **Hybrid extraction instead of AI-only extraction.** Reliable fields stay deterministic, reducing cost and avoiding unnecessary model variance.
-* **Double reading at temperature zero.** Agreement between two independent calls is used as a practical stability check.
-* **Clear separation between extraction and orchestration.** `run.py` processes one folder; `batch_run.py` adds batching, cooldowns, retries, and final consolidation.
-* **Five-pack batches.** Small enough to operate reliably within constrained API quotas while keeping the process fully automatic.
-* **Missing means missing.** The pipeline flags unsupported values instead of generating plausible-looking data.
-* **Service columns outside the official mapping.** Confidence and traceability are added without modifying the required 34-column structure.
-* **Excel as an interchangeable output layer.** OpenPyXL creates a file that can be opened directly in Google Sheets, while direct Sheets writing remains an easy future extension.
+The pipeline writes the 34 requested columns in the same order as the reference mapping.
+
+Additional service columns contain information such as:
+
+* provenance;
+* confidence;
+* review flags;
+* EAN;
+* box dimensions;
+* product identification.
+
+The final `.xlsx` can be uploaded directly to Google Drive and opened with Google Sheets without changing the original column structure.
 
 ---
 
@@ -190,43 +197,49 @@ A failed batch does not silently disappear. The process stops with an explicit e
 
 The deterministic part has no per-pack API cost.
 
-The vision stage sends one rasterised page twice for validation. With a Flash-class Gemini model, the estimated paid usage is approximately:
+The vision stage sends one rasterised page twice for validation.
+
+With a Flash-class Gemini model, estimated paid usage is approximately:
 
 ```text
 €0.002–€0.005 per pack
 ```
 
-The test run used the free tier, so the direct API cost was zero. At this scale, the main operational constraint is request throttling rather than model cost.
+The actual test run used the free tier, so the direct API cost was zero.
 
-Pricing and quotas change over time, so the estimate should be recalculated against the selected Gemini model before production use.
+At this scale, the main practical constraint was request throttling rather than inference cost.
+
+Pricing and quotas change over time, so this estimate should be recalculated against the selected Gemini model before production use.
 
 ---
 
 ## Processing time
 
-Local parsing and rasterisation take only a small fraction of the total runtime. Model latency, cooldowns, and retries dominate.
-
 With 50 files and a batch size of five:
 
-* total batches: 10;
-* forced pauses between batches: 9 × 60 seconds;
-* minimum deliberate throttling time: approximately 9 minutes;
-* total runtime: throttling time plus rasterisation, Gemini latency, and any retries.
+```text
+10 batches
+9 forced pauses
+60 seconds per pause
+≈ 9 minutes minimum deliberate throttling
+```
 
-A paid deployment with higher quotas could reduce or remove the pauses and process batches concurrently with controlled parallelism.
+Total runtime also includes rasterisation, Gemini response time, local processing, and possible retries.
+
+With higher API quotas, the pauses could be reduced or removed and requests could be processed with controlled concurrency.
 
 ---
 
 ## Limitations and possible improvements
 
 * **ASIN is not printed on the dieline.** It requires an external catalogue or PIM joined through the EAN.
-* **Source-level ambiguity remains real.** A vision model cannot recover information that is genuinely absent from the artwork.
-* **Layout drift detection.** A structural check could reject dielines whose icon grid or visual hierarchy differs materially from the expected template.
-* **Barcode cross-check.** `pyzbar` could compare the decoded barcode with the EAN in the filename and the printed digits.
-* **Targeted re-reading.** Low-confidence regions could be cropped and reprocessed at higher resolution instead of repeating the full page.
-* **Direct Google Sheets output.** `gspread` and a service account could replace the intermediate Excel upload.
-* **Cloud orchestration.** A Drive trigger in Make.com or n8n could start the pipeline automatically when new PDFs arrive.
-* **Human-review queue.** Medium- and Low-confidence rows could be copied into a separate “Needs Review” sheet.
+* **Source ambiguity cannot always be solved.** Information genuinely absent from the artwork remains unavailable.
+* **Layout drift detection.** Dielines that differ substantially from the expected visual structure could be detected before extraction.
+* **Barcode cross-check.** `pyzbar` could compare the barcode against both the printed EAN and filename.
+* **Targeted re-reading.** Ambiguous regions could be cropped and processed again at higher resolution instead of repeating the complete page.
+* **Direct Google Sheets output.** `gspread` and a service account could remove the intermediate Excel upload.
+* **Cloud orchestration.** A Drive trigger in Make.com or n8n could start processing automatically when new PDFs arrive.
+* **Human-review queue.** Flagged rows could be copied automatically into a separate review sheet.
 
 ---
 
@@ -239,7 +252,7 @@ A paid deployment with higher quotas could reduce or remove the pauses and proce
 * a Gemini API key;
 * a Gemini Flash model available to the account.
 
-Install the Python dependencies:
+Install the dependencies:
 
 ```bash
 python -m venv .venv
@@ -262,13 +275,13 @@ export GEMINI_API_KEY="your-api-key"
 export MODEL="your-available-flash-model"
 ```
 
-Validate the model on the reference set:
+Validate on the reference set:
 
 ```powershell
 python validate.py .\test --model $env:MODEL
 ```
 
-Process the full folder with automatic batching:
+Process the complete folder:
 
 ```powershell
 python batch_run.py .\fustelle --model $env:MODEL --out output\Dati_Pack.xlsx
@@ -286,13 +299,11 @@ python batch_run.py .\fustelle `
   --retry-wait 120
 ```
 
-At the end of the run, the final workbook is available at:
+Final output:
 
 ```text
 output/Dati_Pack.xlsx
 ```
-
-Upload it to Google Drive and choose **Open with → Google Sheets**.
 
 ---
 
@@ -313,16 +324,3 @@ task2-fustelle-extraction/
 ```
 
 Generated outputs, source PDFs, local environments, temporary batches, and API secrets are excluded from version control.
-
----
-
-## Key techniques
-
-* Building a production-oriented extraction pipeline rather than a one-off prompt.
-* Choosing between deterministic parsing and AI based on the actual source format.
-* Working with multimodal structured output and validation schemas.
-* Designing confidence scoring and review flags around source uncertainty.
-* Debugging a workflow that succeeds on a small test but fails under batch load.
-* Handling API rate limits without introducing manual processing.
-* Preserving the client's required schema while adding operational traceability.
-  ::: 
